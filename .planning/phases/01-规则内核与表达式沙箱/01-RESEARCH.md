@@ -976,7 +976,7 @@ public final class RateLimitSupport {
 | 元空间耗尽（规则 churn） | Denial of Service | `validate()` 前置 + 规则数硬上限 + Metaspace 监控 | **默认不安全**（Pitfall 7） |
 | 规则替换竞态（非原子） | Tampering | 不可变快照 + 单次 `AtomicReference` 读 | 设计已就位（GOV-03/04） |
 | 敏感字段经 env / 日志 / 指标泄漏 | Information Disclosure | deny-by-default 白名单 + 字段白名单 | 设计已就位（INV-8/INV-14、SEC-04） |
-| 规则路径逃逸（`-` 前缀 / `..`） | Tampering | `normalize().startsWith(base)` | 待实现 |
+| 规则路径逃逸（`-` 前缀 / `..`） | Tampering | `normalize().startsWith(base)` | **本阶段无可保护输入**（落盘路径唯一来源是运维配置、目标为目录下固定文件名，规则字段不参与路径拼接——Prohibition #5 的处置，见 `01-05-PLAN.md:172`）。规则可指定资源位置时必须重新评估 |
 
 **降级安全默认值**（`ARCHITECTURE.md:97-98`、`:170`）：
 
