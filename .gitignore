@@ -1,0 +1,16 @@
+# OS / editor noise
+.DS_Store
+
+# Agent tool state (not part of the deliverable).
+# .codegraph is a SYMLINK into ~/.omo/codegraph, so the trailing-slash form
+# does not match it — pattern must have no slash.
+.omo/
+.codegraph
+
+# GSD planning artifacts — versioned (the plan set is the source of truth
+# for the Phase 1 execution gate). NOTE: was previously ignored wholesale
+# via `.planning/` with `commit_docs: false`; changed so the 43 planning
+# files can be committed and pushed to GitHub.
+#
+# Only the research tool's own content-addressed cache is excluded.
+.planning/research/.cache/

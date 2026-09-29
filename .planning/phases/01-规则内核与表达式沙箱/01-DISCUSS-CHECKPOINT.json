@@ -1,0 +1,419 @@
+{
+  "phase": "1",
+  "phase_name": "规则内核与表达式沙箱",
+  "timestamp": "2026-09-29T15:10:00+08:00",
+  "areas_completed": [
+    "数据线在规则 schema 中怎么表达",
+    "schema 版本号策略与演进规则",
+    "表达式可读的环境变量契约",
+    "沙箱逃逸的处置粒度"
+  ],
+  "areas_remaining": [],
+  "decisions": {
+    "数据线在规则 schema 中怎么表达": [
+      {
+        "question": "数据线在规则 schema 中怎么表达？",
+        "answer": "规则级字段（同一份规则集内声明）",
+        "options_presented": [
+          "规则级字段（同一份规则集内声明）",
+          "数据线级分区（每线一份规则集）",
+          "两者结合"
+        ],
+        "rationale": "dataLine 来自入参而非规则本身，故不能是规则的静态属性而必须是路由键；路由表大小须恒等于已编写规则数（GOV-13：10 万卡 BIN 压测后不随实体数增长），排除「为每个数据线复制一份规则」。单份规则集内规则声明 dataLine，运行时按入参 dataLine 筛选，原子切换仍以整份规则集为单位。"
+      },
+      {
+        "question": "dataLine 的取值集合如何定义？",
+        "answer": "可注册集合（SDK 不硬编码）",
+        "options_presented": [
+          "SDK 内置固定枚举",
+          "开放字符串",
+          "可注册集合（SDK 不硬编码）"
+        ],
+        "rationale": "【已反转】初选为「SDK 内置固定枚举」，在向用户出示 PROJECT.md:5「本子应用对它们是通用的，不绑定具体业务场景」原文与具体代价（新增业务线需改 SDK 并发版、消费方升级才能用）后，用户改为「可注册集合」。SDK 不内置任何业务线常量，已知集合由配置或 API 维护；未注册值可推送但运行时标记为未识别并计入指标（可观测，不静默）。与 PROJECT.md:5 一致。",
+        "reversed_from": "SDK 内置固定枚举"
+      },
+      {
+        "question": "规则未声明 dataLine（或声明了枚举外的值）时，如何处置？",
+        "answer": "必填，缺失即整份拒绝",
+        "options_presented": [
+          "必填，缺失即整份拒绝",
+          "必填，缺失归入内置默认线",
+          "必填，发布时校验而非加载时"
+        ],
+        "rationale": "枚举会逼出「缺失值」状态，若静默处理即产生一条永不命中却看起来正常的规则（违反 GOV 判据 2「无规则绝不静默」）。整份原子拒绝复用 GOV 判据 1 的既有失败语义（结构错即整份拒绝、最后一份好版本继续服务），不引入「未分类」第四线。已知代价：新增规则忘填 dataLine 会把全量生效规则一起拖下——已被接受，因最后一份好版本仍在服务，非静默故障。"
+      },
+      {
+        "question": "故障默认值（fail-close / fail-open）按数据线的存放层次如何定？（因 Q2 反转而重开）",
+        "answer": "默认值随注册项走（推荐）",
+        "options_presented": [
+          "默认值随注册项走（推荐）",
+          "仍由 SDK 内置映射",
+          "无默认，逐条规则必填"
+        ],
+        "rationale": "注册项携带 {name, defaultFailStrategy}；清算入站的 fail-open 体现在受版本管理的注册配置中，并由启动断言 + 测试钉住（反转则测试失败）。SDK 代码内无任何业务线名，因此与 Q2 的「可注册集合」不矛盾，而 D7 要求的「写入 code-review 检查项」仍可逐条核对——核对对象从 Java 常量变为注册配置条目 + 守护测试。启动时打印每条线实际生效的默认值。",
+        "reopened_because": "Q2 由「SDK 内置固定枚举」反转为「可注册集合」后，本问原答案「SDK 内置默认映射」的核心理由（与枚举同一处硬编码、可被 code review 逐条核对）被抽掉；若维持原答案等于把刚移除的业务线常量塞回 Java 代码。"
+      }
+    ],
+    "schema 版本号策略与演进规则": [
+      {
+        "question": "schema 版本号的粒度如何定？",
+        "answer": "按能力分列（推荐）",
+        "options_presented": [
+          "按能力分列（推荐）",
+          "全局单一整数",
+          "内容哈希充当版本"
+        ],
+        "rationale": "限流/灰度/缓存三类能力各自一条 schema 版本线，演进互不阻塞——缓存规则加字段不连带作废限流规则。内容哈希被否：版本号不表达「哪个形状」，无法直接支撑 409 SCHEMA_INCOMPATIBLE 判定。已知代价：P6 的 /api/v1 契约需暴露三个 schema 版本号，跨能力一致性校验需额外处理。"
+      },
+      {
+        "question": "ruleVersion 的粒度如何定？",
+        "answer": "每规则独立递增（推荐）",
+        "options_presented": [
+          "每规则独立递增（推荐）",
+          "随 ruleSetVersion 走",
+          "独立递增 + 快照内嵌历史"
+        ],
+        "rationale": "ruleVersion 仅在该规则自身内容变化时递增，故「规则 42 版本 7→8」就是它真的改过一次——审计语义最强，服务项目核心价值「每次决策可追溯到具体规则和规则版本」。被否的「随 ruleSetVersion 走」会使任何无关规则的改动都让所有规则版本跳变，版本变化不再等于该规则变化。已知代价：last-known-good 快照需保留历史版本供 P5 反查，存储与清理策略变复杂。"
+      },
+      {
+        "question": "什么算「schema 已推进」（不兼容）？",
+        "answer": "只加不减（推荐）",
+        "options_presented": [
+          "只加不减（推荐）",
+          "语义等价即可",
+          "任何变更均不兼容"
+        ],
+        "rationale": "只允许新增可选字段与新增枚举值；删字段、改类型、改必填性一律不兼容。「语义等价即可」被否：相同语义需逐字段定义，兼容判定易错。「任何变更均不兼容」被否：加一个可选指标字段就要发 SDK 版本，与可扩展目标相背。重要推论：因 Area 1 Q2 已把 dataLine 定为可注册集合（不进 schema），新增一条业务线不再 bump schema 版本；此处「新增枚举值」指 SDK 自有枚举（failStrategy 取值、决策类型、规则类型）。"
+      },
+      {
+        "question": "滚动升级期间，旧 SDK 实例收到更高 schema 版本的规则集时如何行为？",
+        "answer": "拒绝并保留 last-known-good（推荐）",
+        "options_presented": [
+          "拒绝并保留 last-known-good（推荐）",
+          "忽略未知字段尽力解析",
+          "仅管理 API 拦阻"
+        ],
+        "rationale": "旧 SDK 实例收到高于其支持上限的 schema 版本时整份原子拒绝、继续用 last-known-good 并计入指标，复用 GOV-01 同一套失败语义、不新增代码路径。Q3 选「只加不减」后，正常演进本不产生不兼容状态，故 409 SCHEMA_INCOMPATIBLE 的真实来源正是滚动升级期间的 SDK 版本不一致。「仅管理 API 拦阻」被否：直写 Nacos 的非治理路径会完全失去保护，而 ROADMAP 已声明 API 层校验不是安全边界。已知代价：升级期间新旧实例持有的规则集版本可能不一致（但各自内部一致）。"
+      },
+      {
+        "question": "ruleSetVersion 是全局一个序号，还是按能力各一个？（追问轮，用户要求背景更清晰 + 具体例子）",
+        "answer": "按能力分号（推荐）",
+        "options_presented": [
+          "按能力分号（推荐）",
+          "全局单号，但冲突改为 409",
+          "全局单号 + 同号合并"
+        ],
+        "rationale": "具体失败场景：08:00 限流团队推 ruleSetVersion=9 生效；08:05 缓存团队基于旧文档（version 8）编辑，也填 9 推送——按 GOV-02「更小或相等被丢弃」，该推送被静默丢弃，缓存团队在控制台看到「发布成功」但改动从未生效。单一全局号把不同团队的发布变成互相踩踏。代价（已知并接受）：原子性降为按能力——缓存规则写坏不连带作废限流规则（实为改善），但与 Area 1 Q1 的「整份原子切换」不一致。「全局单号+409」被否：把静默失败换成显式失败，但仍无法并发。「同号合并」被否：合并语义高深、冲突时哪条规则存活不可预测、审计困难。",
+        "supersedes": "修正 Area 1 Q1：单份规则集保留，但原子切换粒度由「整份」改为「按能力」。"
+      },
+      {
+        "question": "三种能力的规则在规则集文档里怎么组织？（追问轮）",
+        "answer": "按能力分区段（推荐）",
+        "options_presented": [
+          "按能力分区段（推荐）",
+          "扁平列表，逐段判版本",
+          "扁平列表 + 单能力推送约束"
+        ],
+        "rationale": "版本号与规则同段，发布通道只写被改动的段，陈旧段不进本次推送。文档形态：{rateLimit:{version,rules[]}, cache:{version,rules[]}, canary:{version,rules[]}}。「扁平列表+逐段判版本」被否：陈旧段丢弃+新版段生效即构成「部分生效」，直接撞 GOV 判据 1；除非把部分生效重新定义为不可观察。「扁平列表+单能力推送约束」被否：约束靠写入方自觉，绕过 API 直写 Nacos 的非治理路径无法保证（ROADMAP 已声明 API 层校验不是安全边界）。已知代价：Nacos 推送的是整份文档，拼回未改动段（合并）成为发布通道责任，SDK 侧不做合并。",
+        "closes_gap": "FU1（ruleSetVersion 按能力分号）遗留的死结：扁平列表下跨能力陈旧段会导致「整份丢弃连累新版段」或「部分生效违反 GOV-01」二选一。分区段使「只推被改动的能力」成为可能，该死结消失。"
+      },
+      {
+        "question": "schema 版本号从哪里来？（追问轮）",
+        "answer": "独立定义文件，SDK 声明上限（推荐）",
+        "options_presented": [
+          "独立定义文件，SDK 声明上限（推荐）",
+          "跟 SDK 制品版本绑定",
+          "内容哈希"
+        ],
+        "rationale": "schema 版本号与 SDK 制品版本解耦。SDK 只声明 maxSchemaVersion[N]，版本号本身在受版本控制的定义文件（如 rate-limit/v1.json，含 capability/version/fields+required）中显式维护。纯 bugfix 发布不 bump schema 版本，故不会因修一个空指针就让滚动升级期间的旧实例整份拒绝新规则（若绑制品版本，2.7.7 空指针修复会把 schema 版本顶高，升级窗口内全量实例停用新规则、继续用旧阈值）。「绑制品版本」被否：理由同上。「内容哈希」被否：无法区分「只加可选字段」与「有破坏性变更」，Area 2 Q3 定的兼容判据无从执行，回滚退化为「回到某个特定内容」而非「回到语义更简单的版本」。已知代价：需维护 schema 定义文件。",
+        "closes_gap": "Area 2 Q4（旧 SDK 遇到更高 schema 版本整份拒绝）此前缺少「SDK 如何知道自己支持到第几版」的答案；本问确定该上限由 SDK 显式声明的 maxSchemaVersion[N] 提供。"
+      },
+      {
+        "question": "ruleVersion 反查回当时的规则内容，依赖什么？（追问轮）",
+        "answer": "规则历史 append-only 永不删 + 存入 MySQL 表（用户指定存储选型）",
+        "options_presented": [
+          "规则历史 append-only 永不删（推荐）",
+          "规则历史滚动清理",
+          "决策记录内联摘要"
+        ],
+        "rationale": "每条规则的每次变更永久留存快照，按 (ruleId, ruleVersion) 寻址；决策记录只带 ruleId+ruleVersion，九字段不膨胀。任何时候的反查必定成功，不产生「内容不可得」的悬空审计指针。成本关键事实：规则历史规模为 O(变更次数) 而非 O(实体数)——GOV-13 明确路由表大小恒等于已编写规则数，规则由人在 Nacos 按人工节奏推送，故 append-only 成本远低于直觉。「滚动清理」被否：版本 7 被删后审计只能答「内容不可得」，违反核心价值「追溯到具体规则」。「决策记录内联摘要」被否：能验证完整性但读不出当时具体内容；且决策记录体积随流量而非变更次数增长。",
+        "storage_note": "用户明确指定存 MySQL 表。",
+        "hot_path_check": "写入发生在规则变更时刻（Nacos 推送回调，人工节奏），读取发生在审计查询时刻（低频）。两者均不在限流/灰度/缓存的决策热路径上，故不违反 PROJECT 约束「单节点模式不得依赖任何网络调用」——该约束约束的是决策路径，规则历史存储不参与决策。",
+        "flagged_implication": "SDK 需新增 JDBC + MySQL 数据源依赖。需在 Phase 1 规划时确认两点：(1) 该环境是否已有 MySQL——若已有则不构成「新增独立部署件」，否则与 PROJECT「v1 不新增独立部署件」冲突；(2) MySQL 不可用时规则变更流程如何表现（不得阻塞规则生效，规则生效不得依赖历史写入成功）。",
+        "closes_gap": "Area 2 Q2（ruleVersion 每规则独立递增）当时留下的「存储与清理策略变复杂」这一已知代价，本问给出了具体解法。"
+      },
+      {
+        "question": "MySQL 的可用性前提与中间件可切换性如何处理？（用户在 Area 2 收口时补充的架构指令）",
+        "answer": "环境已有 MySQL（无新增部署件）；规则历史存储可配置在 MySQL 或 Nacos，MySQL 为结构化查询更清晰的默认选型；Nacos/MySQL 不可用时引用 SDK 的应用默认不可用（硬失败，不静默降级）；必须预留中间件切换扩展口。",
+        "options_presented": [],
+        "rationale": "用户明确：(1) 环境已有 MySQL，故不违反 PROJECT「v1 不新增独立部署件」；(2) 规则历史存储的落点在 MySQL 与 Nacos 之间可配置，结构化数据放表内查询更清晰，故 MySQL 为默认、Nacos 为备选；(3) MySQL 或 Nacos 不可用时，引用这些包的应用默认不可用——这是硬失败而非静默降级；(4) 必须为后续切换其它中间件预留扩展口。",
+        "extension_point": "规则历史存储与配置源均须置于 SDK 自有接口之后（如 RuleHistoryStore / ConfigSource），MySQL 与 Nacos 各为一个实现，由配置选择。Phase 1 须冻结接口而非具体实现。",
+        "resolved": "解除 FU4 标记的 flagged_implication 第 (1) 点（环境是否已有 MySQL）——已有，不构成新增部署件。",
+        "flagged_implication": "此硬失败策略与 PROJECT 的「限流默认 fail-close、灰度默认 fail-open」并存但不重叠：后者适用于配置可达但表达式求值出错的情形（沙箱逃逸、变量缺失）；前者适用于基础设施不可用。两种失败需分属不同计数器与告警，原因分类不得合并。"
+      },
+      {
+        "question": "基础设施不可用 → 应用不可用，具体指哪个时间点？（澄清因上一条与 Area 2 Q4 的 last-known-good 降级语义存在冲突而重开）",
+        "answer": "冷启动硬失败，运行时靠内存规则（推荐）",
+        "options_presented": [
+          "冷启动硬失败，运行时靠内存规则（推荐）",
+          "持续硬失败，立即下架",
+          "冷启动硬失败 + 运行时宽限期"
+        ],
+        "rationale": "进程内已有 last-known-good 规则时照常服务，运行期决策路径不发起任何网络调用——这同时保住了 Area 2 Q4（旧 SDK 拒绝更高 schema 后继续用 last-known-good）与 PROJECT 约束「单节点模式不得依赖任何网络调用」。冷启动时拿不到任何规则则启动失败，因为此时确实无规则可跑，符合「不可用即不可用」。「持续硬失败、立即下架」被否：Nacos 抖动会使全量实例在同一瞬间同时不可用（抖动是全实例共享的），且健康检查摘除后流量归属未定。「运行时宽限期」被否：多一个阈值参数，且抖动持续超阈值时仍会全量下架，未解决根本问题。",
+        "resolves": "消除了「基础设施硬失败」与「Area 2 Q4 last-known-good 降级」及「单节点模式零网络调用」三者之间的冲突：三者在「运行期靠内存规则」这一读法下同时成立。",
+        "implication": "冷启动硬失败须表现为进程启动失败（fail-fast），而非启动成功后所有决策失败——后者会表现为业务大面积拒绝且原因难辨。Phase 1 需明确冷启动期 Nacos/MySQL 的连接重试上限与最终失败行为，并保证该失败在启动日志与健康检查中原因可辨（区分「配置中心不可达」与「MySQL 规则历史不可达」）。"
+      },
+      {
+        "question": "schema 定义文件的粒度如何定？（追问轮）",
+        "answer": "每能力一个文件，版本内完整声明（推荐）",
+        "options_presented": [
+          "每能力一个文件，版本内完整声明（推荐）",
+          "每能力每版本一个文件，声明增量",
+          "单文件全能力全版本"
+        ],
+        "rationale": "每个能力一个 JSON 文件，内含该能力所有版本的完整字段声明，与 FU2 的「按能力分区段」一一对应。单文件内可看全某版本全貌，审计与 code review 方便；SDK 一次解析完该能力的版本链，内存与解析开销可控。「每能力每版本一个文件 + 增量」被否：单文件不完整（需读 v1+v2 才能知道 v2 全貌），且增量结构无法表达「字段从可选变必填」这类必填性变化——而必填性正是 Area 2 Q3 兼容判据的检查项之一。「单文件全能力全版本」被否：文件可达数千行，SDK 启动时要么全量解析所有能力（单节点限流场景用不到缓存也得解析），要么额外加一层懒加载索引。",
+        "known_cost": "版本多时文件膨胀（v1..vN 的字段列表重复）。可接受，因版本演进频率低、每能力实际版本数预计个位数。"
+      },
+      {
+        "question": "maxSchemaVersion 的声明放在哪里？（追问轮）",
+        "answer": "资源文件，与定义文件同目录（推荐）",
+        "options_presented": [
+          "资源文件，与定义文件同目录（推荐）",
+          "代码常量",
+          "Spring 配置属性"
+        ],
+        "rationale": "上限值与 schema 定义文件同目录放一个 .support 资源文件（如 schemas/rate-limit.support，值为 {\"maxSupportedVersion\": 2}），使「定义到第几版、SDK 支持到第几版」同屏可对。成本：上限是运行时可读资源，改错不改代码即可把上限改错；必须靠启动断言拦下不一致（启动失败，而非运行期才发现 409），与冷启动硬失败语义一致。「代码常量」被否：跨能力汇总需人工 review 才能发现某能力漏升。「Spring 配置属性 / Nacos 下发」被否：会把「SDK 知道自己支持什么」变成运行时可变量，而 Area 2 Q4 的降级语义正依赖这个事实是编译期固定的；下调上限可让全量实例对已生效规则集整份拒绝，属自伤式操作。",
+        "invariant": "启动断言必须成立：maxSchemaVersion[N] >= 该能力 schema 定义文件中已存在的最高版本号。否则启动失败（fail-fast），不得降级为运行期拒绝。"
+      },
+      {
+        "question": "schema 字段的废弃（deprecated）如何定义其行为？（追问轮，背景：Q3 定的「只加不减」与现实中字段需要废弃相撞）",
+        "answer": "只标记不改变行为",
+        "options_presented": [
+          "只标记不改变行为",
+          "允许旧规则用，禁止新规则写",
+          "给废弃字段设截止日期"
+        ],
+        "rationale": "deprecated 仅为文档标记，不改变任何运行时行为；旧规则继续用该字段正常服务，新规则也可继续写该字段；removedIn 永远为 null（填任何版本号都等于承认「到 vN 删它」，而 vN 即破坏性变更，与 Q3「只加不减」及 P6 判据 1「不静默强转」直接冲突）。「允许旧规则用、禁止新规则写」被否：那是一条新增的可用性收窄校验规则，需计入兼容性判定，且无法回答存量规则与新规则的中间态是否允许。「sunsetsAfter 到期后连旧规则一起拒绝」被否：实质是破坏性变更，与 Q3 矛盾，且到期时存量规则批量失效需配套迁移工具。",
+        "accepted_cost": "deprecated 字段单调累积、schema 文件持续增长。已明确接受——换取「只加不减」这条不变量的绝对性，以及「任何时刻可按旧规则原样重放」这一回滚前提。",
+        "invariant": "deprecated 字段永不删除、永不改类型、永不改必填性；schema 版本号只增不减。"
+      },
+      {
+        "question": "规则集段要不要显式声明它使用的 schema 版本？（追问轮最后一问）",
+        "answer": "不声明，SDK 按 maxSchemaVersion 校验并记录（推荐）",
+        "options_presented": [
+          "不声明，SDK 按 max 校验并记录（推荐）",
+          "段内显式声明",
+          "不声明，按最低版本校验"
+        ],
+        "rationale": "段结构中的 version 是推送序号（ruleSetVersion）而非 schema 版本，故规则集段不额外声明 schemaVersion。SDK 始终按 maxSchemaVersion[N] 校验——因 Q3「只加不减」保证 v1 写的规则在 v2 下必然仍合法（新增字段均可选、共享字段语义不变），按最新版校验永不出错。SDK 把生效的 schema 版本写入 MySQL 规则历史行，审计时据此解释历史内容，闭合 FU4 的审计需求。收益：写入方少一个字段，「声明 v1 却用了 v2 字段」这种矛盾状态在结构上不可能出现。「段内显式声明」被否：需额外检出声明值与实际用到的字段集之间的矛盾。「按最低版本校验」被否：新增字段永远得不到严格校验，v2 约束形同虚设。",
+        "invariant": "任一 schema 版本的规则集，在 maxSchemaVersion[N] 下校验必然通过（这是「只加不减」的直接推论，也是可回滚性的前提）。"
+      }
+    ],
+    "表达式可读的环境变量契约": [
+      {
+        "question": "表达式可读的环境变量集合从哪里来？",
+        "answer": "SDK 侧固定，按能力分（推荐）",
+        "options_presented": [
+          "SDK 侧固定，按能力分（推荐）",
+          "规则侧声明 exposedVars",
+          "全局单一固定集"
+        ],
+        "rationale": "变量集合写在 SDK 代码里并按能力划分，规则不声明任何变量。暴露面最小且可审计（代码里能看全每条能力能读到什么），且结构上不可能出现「规则声明了 SDK 不提供的变量」这种矛盾（规则侧声明方案必须额外检出，如 exposedVars:[\"cvv\"]）。全局单一固定集被否：暴露面最大，一条限流规则也能读到灰度专用的 userHash，且变量集随能力增加而膨胀。",
+        "known_cost": "加一个变量或新增一条能力要发 SDK 版本，且需同步改三处：能力定义、该能力的变量集、启动断言。已接受——换取「暴露面在代码里可穷举审计」这一安全属性。",
+        "hot_path_constraint": "env 容器每次决策都必须新建（value 随请求变；key 集虽固定但 map 不可复用——research/STACK.md 明令禁止可变 map，以防其他线程求值中途改它）。故变量数量直接是每次决策的分配成本，而 PERF 预算 P99 < 10µs。每条能力的变量集大小需在 Phase 1 规划时给出上限并纳入 JMH 基准。",
+        "security_basis": "research/STACK.md：sandbox mode 限制表达式「能做什么」，不限制「能读到什么」——后者完全取决于交给 Aviator 的 env 容器。STACK.md 明确红线：传不可变环境 map（卡号哈希、金额档位、渠道），绝不传原始请求对象。"
+      },
+      {
+        "question": "env 容器里的数值类变量放原始值，还是放 SDK 预分好的档位？",
+        "answer": "原始字段进 env，派生全在表达式（用户未直接选此项，而是反问取值方式；在听完形态说明后未反对该形态而直接追问 env 取值，视为接受）",
+        "options_presented": [
+          "原始字段进 env，派生全在表达式",
+          "额外再提供全局档位变量",
+          "只放预分档值"
+        ],
+        "rationale": "阈值与分档不再需要发 SDK 版本——调档、改阈值、组合条件全是一次配置推送。显式禁止提供任何中间档位变量：表达式里没有可拼错的自由字符串名（amountTear == 'T_10K_PLUS' 恒为 false 且不报错，是与项目既定立场冲突的静默失效点）。原始值直取写法 amount > 10000 中字面量即边界，审计一眼可懂。SDK 固定集退化为仅装原始入参字段。",
+        "concrete_field_examples": {
+          "RATE_LIMIT": ["amount(long,单位分)", "channel", "dataLine", "cardBin(明文,非敏感)", "cardProduct", "issuerId", "merchantId"],
+          "CANARY": ["subjectHash(主体标识哈希,永不传原文)", "cardProduct", "issuerId", "channel", "dataLine"],
+          "CACHE": ["keyHash(sensitive=true 时唯一可进 env 的 key 形态)", "entryType(额度/账户/配置)", "dataLine"]
+        },
+        "sensitivity_tiering": "原始字段天然分三层：①公开（channel/cardProduct/dataLine/cardBin）明文进 env；②业务标识（merchantId/issuerId/subjectHash/keyHash）明文进 env 但禁止做指标标签（Out of Scope 第 10 条已将用户 ID / PAN / 交易号列为高基数标签）；③强敏感（完整卡号、CVV、持卡人姓名）永不进 env。第三层是关键——沙箱管得住「能做什么」管不住「能读到什么」，故能否进 env 是靠这张表在代码里硬性划掉，不是靠运行时拦截。这也是 Q1 选 SDK 侧固定的理由：这张表能被 review 逐条核对。",
+        "known_cost": "①每次决策仍需放入装箱的原始值（amount 取 long/分，既避开浮点误差也使装箱比 BigDecimal 轻），P99 < 10µs 需在 EXPR-04 的 JMH 实测掉。②单位约定（amount = 分）在 SDK 固定集定义处定死，全库单点而非每条规则作者各定。③字段最终清单与类型留到 Phase 1 规划逐条确认，本决策只定契约形状。",
+        "scope_note": "dataLine 细节：它同时是 Area 1 定的规则级声明字段与运行时入参路由键，两者同值。env 带的是当前这条数据线，规则只在自己声明的那条线内被评估。"
+      },
+      {
+        "question": "env 里的原始字段值从哪里取？",
+        "answer": "反射 + 递归展开 + 白名单",
+        "options_presented": [
+          "不用反射，显式构造 context（推荐）",
+          "反射一层 + SDK 白名单过滤",
+          "反射 + 递归展开 + 白名单"
+        ],
+        "rationale": "用户听完三方案成本说明后选定递归展开。业务代码最省事：调用方无需逐字段构造 context，SDK 自行从方法参数与对象图提取。",
+        "accepted_risk": "已明确告知并被接受：递归展开使强敏感字段在方法签名上可见——如 authorize(AuthRequest req, AuthContext ctx) 中 AuthRequest 含 pan/cvv/expDate/cardHolderName。递归展开后 env 候选集包含它们，是否排除完全依赖白名单是否写全。故本决策与前述「强敏感层永不进 env」结论相左，须由白名单而非反射结构兑现。",
+        "exfiltration_note": "已告知：能往 Nacos 推规则者可写 cvv == '123' 或 pan == '6222021234567890'。判定结果本身即一比特信道，配合逐次试探可逐位拼出完整卡号。沙箱对此无能为力——无方法调用、无反射，是一次普通字符串比较。故唯一屏障是白名单。",
+        "technical_note": "反射深度决定敏感数据是否可能被碰到：只反射一层且只接受原始类型时，authorize(long amount, String channel, String cardBin, AuthContext ctx) 天然安全（pan 不在签名里）；而 authorize(AuthRequest req) 必须展开对象才会碰到 pan。签名怎么写是业务代码约定，SDK 无法单方面保证，故白名单必须兜住。",
+        "mandatory_mitigations": [
+          "白名单在 SDK 代码中以 deny-by-default 强制：不在白名单的 key 不是被忽略而是使该规则判为不合规并拒绝加载，同时计数并告警。",
+          "必须有一条可验证的测试断言 cvv / pan / expDate / cardHolderName 等强敏感字段在任何反射展开路径下都不可能进入 env——白名单为唯一屏障所必需的证据，纳入 Phase 1 验收。",
+          "反射须限深，并对集合/Map/循环引用做保护，避免深对象图与自引用导致栈溢出与无限展开。",
+          "反射元数据（Method/Field/展开路径）必须缓存，否则每次决策重建反射树将直接击穿 P99 < 10µs。"
+        ],
+        "out_of_scope_note": "Out of Scope 第 11 条「仅注解式强制」已排除（Spring AOP 自调用静默绕过 advice，编程式 API 才是执行者）。递归反射展开是取值便利层，不改变「编程式 API 才是执行者」这一结论。"
+      },
+      {
+        "question": "表达式引用的变量在本次对象图中不存在时，如何处理？",
+        "answer": "缺失即 nil + 独立计数（推荐）",
+        "options_presented": [
+          "缺失即 nil + 独立计数（推荐）",
+          "缺失即命中（fail-close）",
+          "缺失即决策失败"
+        ],
+        "scenario": "规则 when: \"amount > 10000 && issuerId == '123'\" 跑在 authorize(AuthRequest req, AuthContext ctx) 上。刷卡授权从网络进来时 ctx.issuerId 有值；内部批量或兜底路径上 ctx 里根本没有该字段。同一规则、同一数据线，两次调用变量集不同。",
+        "distinction_from_whitelist": "白名单缺失是加载期静态可判定（已定为 deny-by-default 拒绝加载）；本问是运行期才知道——反射扫不到就是扫不到。两者不可混为一谈。",
+        "rationale": "【前提未核实，见 corrections 中的 premise_correction 条目——本条首句所述 Aviator 行为须以 JMH 实测确认】选定此方案因为：①规则作者可自行写守卫（issuerId != nil && ...），责任显式化且可审计；②不把配置缺陷放大成业务拒绝（否掉 fail-close 与决策失败）；③不在热路径引入异常路径，保住 P99 < 10µs。核心补充是把「静默」变成「可观测」——项目已反复拒绝静默失效，但运行期字段存在性本质上无法静态穷尽，故以独立指标而非硬失败来兜。",
+        "requirement_consistency_can09": "既有需求 CAN-09「targeting key 缺失时 fail-open 到『此规则不匹配』并计指标；绝不随机」已确立同一模式：缺失 → 退回不匹配 + 计指标。Q4 与之同构且不冲突，故本决策不新增模式，只是把 CAN-09 的处理面从灰度 targeting key 扩展到全部能力的表达式变量。",
+        "premise_warning": "原文首句「Aviator 对 env 中不存在的键按 nil 处理，谓词自然为 false 且无异常」为未核实断言，已自 corrections.premise_correction 纠正。实现不得依赖该行为假设；若实测显示 nil 参与比较会抛异常，则本条走未命中路径的前提失效，须改走同区 Q2 的 fail 策略路径。",
+        "mandatory_observability": "SDK 必须把「因变量缺失未命中」与「表达式评估为 false」计为两个独立指标/计数，并可按规则 ID 下钻。缺此项则本决策退化为真正的静默失效，与选定动机相悖。纳入 Phase 1 验收。",
+        "known_cost": "规则作者漏写守卫时规则仍不命中——失效从无声变为有指标，但不消除。规则评审须检查可选变量是否带 nil 守卫。"
+      }
+    ],
+    "沙箱逃逸的处置粒度": [
+      {
+        "question": "某条规则的表达式触发沙箱拦截时，处置粒度选哪个？",
+        "answer": "按能力段整段拒绝（推荐）",
+        "options_presented": [
+          "按能力段整段拒绝（推荐）",
+          "只丢单条规则",
+          "单条降级为恒不命中"
+        ],
+        "rationale": "沙箱逃逸企图在编译期即被 Aviator 拦下（Aviator 5.4.4 的 enableSandboxMode() 自 5.4.3 起关闭 Module / NewInstance / InternalVars / StaticFields / StaticMethods 与反射，并设循环与求值步数上限；validate()/compile() 对 NewInstance 这类构造直接抛异常），属加载期可判定事件，与 Area 2 定的「载荷结构错误 → 按能力段原子拒绝」同属一类。选整段拒绝以避免同一类事件出现两套粒度。",
+        "decisive_argument": "真正决定性因素不是可用性而是版本审计能否自圆其说。只丢单条或降级恒不命中，都会让段版本号成为二选一：算新版本号则「该版本已生效」不等于推送内容（少了一条），GOV-02 版本单调性与运维审计口径失效；算旧版本号则内容已变而版本未动，版本号与内容脱钩。部分应用从根上破坏「生效版本号 ↔ 生效内容一一对应」这条不变量。整段拒绝是唯一能同时保住「整段全生效或全不生效」与该一一对应的方案。",
+        "accepted_cost": "一条手误或恶意规则能连带挡住同段所有正常规则的更新。判定该风险不成立的理由：能往 Nacos 推规则的攻击者本来就能推一条更隐蔽的表达式，不依赖这条编译失败的规则即可达成 DoS；且整段拒绝会在指标与告警中立即可见（见本区续问的分类告警决策）。",
+        "concrete_scenario": "{ rateLimit: { version: 10, rules: [ {id: rl-001, when: \"amount > 10000\"}, {id: rl-x, when: \"NewInstance('java.lang.Runtime')...\"} ] } } —— 编译 rl-x 抛异常，version 10 整段不加载，version 9 的规则继续生效。"
+      },
+      {
+        "question": "规则已加载生效后，表达式在运行期求值失败（nil 运算 / 类型不匹配 / 步数耗尽）时如何处置？",
+        "answer": "走 fail 策略，段不回滚（推荐）",
+        "options_presented": [
+          "走 fail 策略，段不回滚（推荐）",
+          "回滚该段并停服",
+          "按未命中处理"
+        ],
+        "rationale": "RL-17（限流默认 fail-close，逐条规则可覆写）与 CAN-06（灰度默认 fail-open，配置不可用时退回全量）规定的 fail 策略覆盖范围本就应该包含「规则无法给出结论」这种情形，而不只是「依赖不可达」。运行期求值失败正是规则给不出结论的一种，故直接复用既有 fail-close / fail-open 语义，不新增第三种处置。段不回滚。",
+        "requirement_crossref_correction": "原文误引 GOV-08。GOV-08 实为「配置删除是合法事件且被显式处理，退回内置静态安全默认，而非保留旧值」，与 fail 策略无关。fail 策略的真实落点为 RL-17 / RL-18 / RL-20 / RL-21 / RL-29 / CAN-06。",
+        "binding_constraint_rl20": "RL-20「每条 fail-open 规则配独立静态本地回退配额」（验收：配置不可用 + 无回退 ≠ 无限通行）是对本决策的直接约束：走 fail-open 放行时必须有本地静态回退配额兜底，不得等于无限通行。Phase 1 规划须把该配额纳入本路径的实现。",
+        "decision_record_constraint_rl21": "RL-21「实际生效的 failStrategy 记入 DecisionRecord」——本决策下按 fail 策略返回的决策，其 DecisionRecord 的 failStrategy 字段须记录实际生效的那一个（GOV 修订后该九字段白名单见 SEC-01）。",
+        "failure_sources": [
+          "nil 参与算术/比较——Area 3 Q4「缺失即 nil」的直接后果，如 amount 缺失而表达式写 amount + 100 > 500",
+          "类型不匹配——amount 传入 String 而表达式写 amount > 10000",
+          "步数上限耗尽——表达式含循环或极端嵌套，撞上 Aviator 的求值上限"
+        ],
+        "why_not_rollback": "回滚到 last-good 并停服该能力，会把一次瞬时异常（如某类请求缺字段）放大成整个能力不可用。且比同区 Q1 刚定的「整段拒绝」更激进，而 Q1 拒绝「单条拖累整段」的理由在运行期并不成立：Q1 挡的是加载期的确定性失败，这里是运行期的偶发失败，Q1 的结论不能反向套用。",
+        "why_not_treated_as_no_match": "按谓词 false 处理会让拦截类规则因求值异常而不命中，即静默失效——正是本项目反复拒绝的失败类型，且与 Area 3 Q4 已明确要避免的同属一类。此外它把异常与 false 混进同一语义，规则作者无法区分「条件确实不满足」与「条件算不出来」。",
+        "interaction_with_area3_q4": "两条路径共存且互不冲突：变量缺失而不抛异常时走 Q4 的 nil→未命中 + 独立计数；变量缺失导致抛异常时走本问的 fail 策略 + 独立计数。Q4 要求的「因变量缺失未命中」与本问的「因求值失败按策略返回」必须是两个可分别下钻到规则 ID 的指标。",
+        "mandatory_verification": "Aviator 5.4.4 在 NIL_WHEN_PROPERTY_NOT_FOUND 取值不同时、以及 nil 参与比较与算术时的真实行为（返回 false 还是抛异常）必须以 JMH 实测确认，不得以推断写入实现。见 corrections 中的对应前提纠正条目。"
+      },
+      {
+        "question": "沙箱逃逸企图与逃逸成功如何分类与告警？",
+        "answer": "统一指标，边界划到 SDK 外（推荐）",
+        "options_presented": [
+          "统一指标，边界划到 SDK 外（推荐）",
+          "配置错误级 + 成功启发式检测",
+          "企图即高危安全事件"
+        ],
+        "decisive_finding": "逃逸成功在 SDK 内不可检测。沙箱被绕过时表达式编译通过、求值通过、返回一个值——SDK 看到的就是一个正常结果，不抛异常，决策照常返回。攻击者的 Runtime.exec() 在 SDK 眼里就是一个 boolean。故「逃逸成功」的检测不属于 SDK 职责，属进程外层面（子进程创建、出网连接、文件写入 → EDR / 容器运行时）。",
+        "rationale": "统一为 sandbox_violation 单一指标，拒绝动作（按能力段整段拒绝）已由本区 Q1 定死，本问只定告警分档。不在 SDK 内假装能检测成功——一个对真正攻击（任意代码执行，通常很快）大概率抓不到、却对合法复杂表达式高误报的检测器，投入产出不划算。",
+        "contract_requirement": "SDK 契约必须显式写明该边界：沙箱逃逸成功的检测责任在进程外基础设施（EDR / 子进程与出网监控），SDK 只负责记录并上报它可观测的逃逸企图。不得在文档或 SDK 契约中暗示 SDK 具备逃逸成功检测能力。",
+        "why_not_escalate_attempt_to_high_severity": "规则作者试错、拷贝外部代码片段都会触发编译期拦截。若全部走独立高危安全告警通道，数月后该通道即被无视，真事件到来时与噪声混同——比没有告警更糟。"
+      }
+    ]
+  },
+  "corrections": [
+    {
+      "type": "decision_revision",
+      "area": "数据线在规则 schema 中怎么表达",
+      "original_decision": "Q1 规则级字段（同一份规则集内声明），原子切换以整份规则集为单位",
+      "revised_by": "Area 2 追问轮：ruleSetVersion 按能力分号",
+      "revision": "文档仍为单份规则集，但原子切换与版本单调性均按能力（限流/灰度/缓存）划分。GOV-01「整份原子拒绝」在规则结构错误时仍成立；版本号单调性按能力判定。",
+      "reason": "单一全局 ruleSetVersion 导致跨团队发布互相踩踏（同号推送被静默丢弃）。"
+    },
+    {
+      "type": "requirement_amendments",
+      "authorized_by": "用户在冲突处置问中选定「修订 REQUIREMENTS.md（推荐）」",
+      "note": "本轮讨论挖出的坑落在 research/SUMMARY.md 标记为「已收敛」因而未留灰区的条目上。以下 6 条 v1 需求已就地改写，Phase 1 规划直接消费一致规格。",
+      "amendments": [
+        {
+          "id": "FND-05",
+          "was": "冷启动不要求配置中心可达；提供 foundation.rule.startup-policy = RESILIENT（默认）/ STRICT",
+          "now": "冷启动需配置中心可达，无 last-known-good 且不可达时进程启动失败；startup-policy = STRICT（默认）/ RESILIENT（须显式 opt-in，降级为空快照 + loaded=false + 健康 DOWN）",
+          "driver": "用户架构指令：MySQL/Nacos 不可用则应用不可用 → 收窄为冷启动硬失败。FND-05 已预留 STRICT 档位，故仅翻默认值。"
+        },
+        {
+          "id": "GOV-01",
+          "was": "规则 schema 带双版本信封：schemaVersion（仅在不兼容线上变更时递增）与 ruleSetVersion（单调递增）",
+          "now": "schema 版本按能力分列；SDK 以 schemas/<capability>.support 声明 maxSchemaVersion[N]；段内不声明 schemaVersion，由 SDK 按 max 校验并写入规则历史行；ruleSetVersion 按能力各自单调递增；schema 演进只加不减；deprecated 只标记不改行为、removedIn 恒为 null",
+          "driver": "Area 2 Q1/F1/F3/F5/F6/F8 + Q3/F7。原「双版本信封」形态正是 F1 中会导致跨团队推送被静默丢弃的设计。"
+        },
+        {
+          "id": "GOV-03",
+          "was": "规则集以不可变快照生效，运行时单次 AtomicReference 切换",
+          "now": "每个能力段以独立不可变快照生效，运行时各自单次 AtomicReference 切换",
+          "driver": "F1 原子性降为按能力（连带修订，未经单独批准）"
+        },
+        {
+          "id": "GOV-04",
+          "was": "部分应用在结构上不可能：整份规则集校验通过才切换，否则整份拒绝并完整保留前一版本",
+          "now": "某能力段校验通过才切换该段，否则该段整段拒绝并完整保留该能力的前一版本（跨能力互不连累）",
+          "driver": "F1/F2（连带修订，未经单独批准）"
+        },
+        {
+          "id": "GOV-06",
+          "was": "推送载荷格式错误或语义错误时整份原子拒绝，保留前一版本",
+          "now": "推送载荷格式错误或语义错误时按能力段原子拒绝该段，保留该能力前一版本",
+          "driver": "F1/F2（连带修订，未经单独批准）"
+        },
+        {
+          "id": "GOV-11",
+          "was": "启动时无 last-known-good 可用：以能力默认值 + 空快照服务，foundation.rule.loaded=false，健康 DOWN（响亮而非静默）",
+          "now": "冷启动时无 last-known-good 且配置中心/规则历史不可达：进程启动失败（fail-fast），日志与健康端点须区分两类不可达；运行期已有内存 last-known-good 时照常服务，决策路径不发起网络调用；启动断言校验 maxSchemaVersion[N] ≥ 已定义最高版本号",
+          "driver": "用户架构指令 + FU6 不变量。附带消解：GOV-05「Nacos 故障后冷启动不降级」与原 GOV-11「以空快照服务」本就自相矛盾，修订后一致。"
+        }
+      ],
+      "verification": "修订后 v1 需求仍为 152 条 / 152 唯一 ID；6 个 ID 均在位；「整份规则集」「双版本信封」措辞已无残留。"
+    },
+    {
+      "type": "premise_correction",
+      "target": "Area 3 Q4「表达式引用的变量在本次对象图中不存在时」",
+      "unverified_claim": "「Aviator 对 env 中不存在的键按 nil 处理，谓词自然为 false 且无异常。」",
+      "why_unverified": "该行为取决于 Aviator 的 NIL_WHEN_PROPERTY_NOT_FOUND 选项取值，且 nil 参与比较（amount > 10000）与参与算术（amount + 100 > 500）的行为未必相同。两者均未在 Aviator 5.4.4 上实测。",
+      "discipline_note": "与 research/STACK.md 中 Redis Lua 延迟数字标注 'UNVERIFIED (must be measured)'、以及 EXPR-03 要求以实测数字而非推断替代 MEDIUM 置信度数值，同属一条纪律：未实测的行为不得写成既定事实再据以决策。",
+      "impact_if_wrong": "若 nil 参与比较/算术实际抛异常，则「缺失即 nil」不止产生一条「不命中」路径，还会多出一条运行期异常路径——即 Area 4 Q2 所处置的那一类。该风险已由 Q2 的「走 fail 策略」覆盖，故 Q4 的结论本身不因此失效。",
+      "resolution": "两条路径均已分别定案并各自计数，无需重问：缺失而不抛异常 → Q4 的 nil→未命中 + 独立计数；缺失导致抛异常 → Q2 的 fail 策略 + 独立计数。",
+      "required_action": "Phase 1 规划必须把「实测 Aviator 5.4.4 在 NIL_WHEN_PROPERTY_NOT_FOUND 各取值下、nil 参与比较与算术的真实行为」列为 EXPR 相关的 JMH 验证项，实测结果回填本条。在此之前实现不得依赖该行为假设。"
+    },
+    {
+      "type": "requirement_amendment",
+      "authorized_by": "用户在冲突处置问中选定「修订 RL-19 为注册表 + 守护测试（推荐）」",
+      "id": "RL-19",
+      "was": "卡组织清算报文入站业务线的 fail 策略在 SDK 中硬编码为 fail-open（验收：写入 code-review 检查项，防止后续\"统一默认值\"重构改回去）",
+      "now": "卡组织清算报文入站业务线的 fail-open 在受版本管理的 dataLine 注册表中固定（注册项形如 {name, defaultFailStrategy}；SDK 代码内无任何业务线名），并由守护测试钉住——反转即测试失败——同时列入 code-review 检查项",
+      "conflict": "RL-19 原文要求该 fail 策略写死在 SDK Java 代码中，与 Area 1 Q4 已定决策「默认值随注册项走、SDK 代码内无任何业务线名」直接矛盾。",
+      "why_not_a_slip": "非疏漏。Area 1 Q4 的 rationale 直接引用了 RL-19 的验收措辞，并说明护栏平移方式：核对对象从 Java 常量变为注册配置条目 + 守护测试。护栏意图（防后续「统一默认值」重构静默改回）完整保留，仅机制更换。但该需求涉及财务级事故防护（若清算入站被改成 fail-close，清算报文被拒收即结算数据丢失），更换验收机制须经用户显式确认，故单列为一条修正而非并入前一批 6 条连带修订。",
+      "risk_preserved": "清算报文入站 fail-open 是防止结算数据丢失的关键默认值。修订后护栏由两层构成：①受版本管理的注册表条目（进入 code review 范围）；②守护测试钉住（反转即测试失败）。二者缺一则该默认值失去回归防护。",
+      "verification": "修订后 v1 需求仍为 152 条 / 152 唯一 ID；RL-19 在位；「硬编码为 fail-open」措辞已无残留。"
+    }
+  ],
+  "deferred_ideas": [],
+  "canonical_refs": [
+    ".planning/PROJECT.md",
+    ".planning/REQUIREMENTS.md",
+    ".planning/ROADMAP.md",
+    ".planning/STATE.md",
+    ".planning/research/SUMMARY.md",
+    ".planning/research/ARCHITECTURE.md",
+    ".planning/research/PITFALLS.md",
+    ".planning/research/STACK.md"
+  ],
+  "toolchain_note": "gsd-tools 的 generateSlugInternal 对中文阶段名返回空串，导致 expected_phase_dir 恒为 null。已通过 matchPhaseDirs 的 bare-integer 回退绕过：目录只要带前导数字段（01-）即可被解析。Phase 2-6 需用同样方式预建目录（如 02-限流执行与故障策略）。当前 phase_dir=.planning/phases/01-规则内核与表达式沙箱"
+}

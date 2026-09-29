@@ -1,0 +1,43 @@
+{
+  "contract": "1.0.0",
+  "flavor": "core",
+  "milestone": null,
+  "phases": [
+    {
+      "number": "1",
+      "name": "规则内核与表达式沙箱",
+      "status": "pending"
+    },
+    {
+      "number": "2",
+      "name": "限流执行与故障策略",
+      "status": "pending"
+    },
+    {
+      "number": "3",
+      "name": "灰度评估器",
+      "status": "pending"
+    },
+    {
+      "number": "4",
+      "name": "两级缓存",
+      "status": "pending"
+    },
+    {
+      "number": "5",
+      "name": "决策可观测性",
+      "status": "pending"
+    },
+    {
+      "number": "6",
+      "name": "管理 API 与接入验证",
+      "status": "pending"
+    }
+  ],
+  "next": {
+    "command": "/gsd:progress --next",
+    "label": "Advance to the next step (plan phase 1)",
+    "reason": "Phase 1 of 6 — needs a plan"
+  },
+  "updated_at": "2026-09-29T13:50:51.025Z"
+}

@@ -1,0 +1,70 @@
+
+##### 1. REGEX LITERAL /pattern/ WITH =~  (OperatorType MATCH swaps args: args[1].match(args[0]))
+  s =~ /a/                 => OK:false                                       (7 ms)
+  s =~ /^(a+)+b$/          => DID-NOT-FINISH-WITHIN-3000ms                   (3000 ms)
+  /^(a+)+b$/ =~ s          => THROW:ExpressionRuntimeException:<JavaType, s, (2 ms)
+  s =~ /(a)/               => OK:false                                       (4 ms)
+  s !~ /zzz/               => THROW:ExpressionSyntaxErrorException:Syntax er (0 ms)
+
+##### 2. ReDoS VIA /pattern/ =~  -- does EVAL_TIMEOUT_MS=1000 stop it?
+  n=16  OK:false                                 (3 ms)
+  n=20  OK:false                                 (16 ms)
+  n=22  OK:false                                 (65 ms)
+  n=24  OK:false                                 (262 ms)
+  n=26  OK:false                                 (1227 ms)
+  NOTE: java.util.regex runs inside ONE interpreter step; the timeout check cannot interleave.
+
+##### 3. ReDoS VIA string.replace_all / replace_first / split (String.* regex, UNVALIDATED)
+  string.replace_all(s, /^(a+)+b$/, 'x')       => THROW:ClassCastException:java.util.reg (4 ms)
+  string.replace_all(s, '^(a+)+b$', 'x')       => DID-NOT-FINISH-WITHIN-4000ms           (4000 ms)
+  string.replace_first(s, /^(a+)+b$/, 'x')     => THROW:ClassCastException:java.util.reg (4 ms)
+  string.split(s, /^(a+)+b$/)                  => THROW:ClassCastException:java.util.reg (4 ms)
+
+##### 4. REGEX CAPTURE GROUPS -> ENV MUTATION? (PUT_CAPTURING_GROUPS_INTO_ENV)
+  option=true   => OK match=true  envAfter={$0=abc123, $1=abc, $2=123, s=abc123}
+  option=false  => OK match=true  envAfter={s=abc123}
+
+##### 5. DOES DISABLING ENABLE_PROPERTY_SYNTAX_SUGAR CLOSE THE amount.class LEAK?
+  --- ENABLE_PROPERTY_SYNTAX_SUGAR=false ---
+    amount.class         => OK:null
+    amount.class.name    => OK:null
+    'a'.class            => THROW:ExpressionSyntaxErrorException
+  --- ENABLE_PROPERTY_SYNTAX_SUGAR=true ---
+    amount.class         => OK:class java.lang.Long
+    amount.class.name    => THROW:ExpressionRuntimeException
+    'a'.class            => THROW:ExpressionSyntaxErrorException
+
+##### 6. *** DECISIVE *** addOpFunction STEP COUNTER -- CONSULTED IN ASM MODE OR NOT?
+  EVAL_MODE=ASM          opHooksFired=1  exprResult=OK:11
+      => opsMap IS consulted in this mode (counter enforceable)
+  EVAL_MODE=INTERPRETER  opHooksFired=1  exprResult=OK:11
+      => opsMap IS consulted in this mode (counter enforceable)
+
+##### 7. CORRECTED CLASS/METASPACE COUNTS (warmed, N=20000, validate vs compile)
+  N=20000 validate(malformed) -> classes +12   metaspace 15->15 MB
+  N=20000 compile(malformed)  -> classes +4000   metaspace 15->18 MB
+  N=20000 compile(valid)      -> classes +20000   metaspace 18->25 MB
+  => per malformed compile attempt: 0.2 classes | per valid compile: 1.0 classes
+
+##### 8. LRU BOUNDS THE CACHE, NOT THE GENERATED CLASSES
+  LRU(50) + 5000 distinct execute -> classes +5000   metaspace 27->20 MB
+
+##### 9. SANDBOX READBACK (no isSandboxMode() API exists)
+  OPTIMIZE_LEVEL                                 = 1
+  MATH_CONTEXT                                   = precision=34 roundingMode=HALF_EVEN
+  ALWAYS_PARSE_FLOATING_POINT_NUMBER_INTO_DECIMA = false
+  ALWAYS_PARSE_INTEGRAL_NUMBER_INTO_DECIMAL      = false
+  TRACE_EVAL                                     = false
+  PUT_CAPTURING_GROUPS_INTO_ENV                  = true
+  CAPTURE_FUNCTION_ARGS                          = false
+  ENABLE_PROPERTY_SYNTAX_SUGAR                   = true
+  NIL_WHEN_PROPERTY_NOT_FOUND                    = false
+  USE_USER_ENV_AS_TOP_ENV_DIRECTLY               = true
+  MAX_LOOP_COUNT                                 = 65535
+  FEATURE_SET                                    = [Assignment, ForLoop, StaticFields, Lambda, WhileLoop, LexicalScope, StringInterpolation, Fn, Return, Use, If, ExceptionHandle, Let]
+  ALLOWED_CLASS_SET                              = []
+  ASSIGNABLE_ALLOWED_CLASS_SET                   = []
+  EVAL_MODE                                      = ASM
+  SERIALIZABLE                                   = false
+  EVAL_TIMEOUT_MS                                = 1000
+  sandbox proof = FEATURE_SET is narrow AND ALLOWED_CLASS_SET is empty
